@@ -32,6 +32,19 @@ KV260_BITSTREAM ?= "${@kv260_find_bitstream(d)}"
 SRC_URI = " \
     file://${KV260_BITSTREAM} \
     file://pl.dtso \
+    file://pcam-user.dtsi \
 "
 
 DT_FILES = "pl.dtso"
+
+# Include PCAM settings after the generated PL nodes in the build copy only.
+python do_configure:append() {
+
+    path = os.path.join(d.getVar('S'), 'pl.dtso')
+    include = '#include "pcam-user.dtsi"'
+    with open(path, 'r') as f:
+        content = f.read()
+    if include not in content:
+        with open(path, 'a') as f:
+            f.write('\n' + include + '\n')
+}

@@ -1,0 +1,143 @@
+/*
+ * KV260 PCAM 5C: OV5640 -> CSI-2 RX (YUV422 8-bit) -> AXI VDMA S2MM.
+ * Included after the generated pl.dtso; this is not a separate runtime overlay.
+ * The PL must already implement YUV422_8bit, one pixel/clock and two lanes.
+ * cam_gpio_tri_o[0] must be wired directly to the module's active-high PWUP.
+ */
+#include <dt-bindings/gpio/gpio.h>
+
+&amba {
+    #address-cells = <2>;
+    #size-cells = <2>;
+
+    pcam_xclk: camera-clock {
+        compatible = "fixed-clock";
+        #clock-cells = <0>;
+        clock-frequency = <12000000>;
+    };
+
+    /*
+     * PCAM has onboard supplies and a 12 MHz oscillator. Keep PWUP asserted
+     * while the overlay is loaded, rather than using the sensor driver's
+     * shorter PWDN pulse for a module power cycle. Allow 50 ms before SCCB.
+     */
+    pcam_power: regulator-pcam-power {
+        compatible = "regulator-fixed";
+        regulator-name = "pcam-module-power";
+        regulator-min-microvolt = <3300000>;
+        regulator-max-microvolt = <3300000>;
+        gpio = <&axi_gpio_0 0 GPIO_ACTIVE_HIGH>;
+        enable-active-high;
+        startup-delay-us = <50000>;
+        off-on-delay-us = <100000>;
+        regulator-always-on;
+    };
+
+    /* Internal module rails; their voltages are fixed by the module hardware. */
+    pcam_avdd: regulator-pcam-avdd {
+        compatible = "regulator-fixed";
+        regulator-name = "pcam-avdd";
+        vin-supply = <&pcam_power>;
+        regulator-always-on;
+    };
+
+    pcam_dvdd: regulator-pcam-dvdd {
+        compatible = "regulator-fixed";
+        regulator-name = "pcam-dvdd";
+        vin-supply = <&pcam_power>;
+        regulator-always-on;
+    };
+
+    pcam_dovdd: regulator-pcam-dovdd {
+        compatible = "regulator-fixed";
+        regulator-name = "pcam-dovdd";
+        vin-supply = <&pcam_power>;
+        regulator-always-on;
+    };
+
+    pcam_capture: video-capture {
+        compatible = "xlnx,video";
+        dmas = <&axi_vdma_0 1>;
+        dma-names = "port0";
+
+        ports {
+            #address-cells = <1>;
+            #size-cells = <0>;
+
+            port@0 {
+                reg = <0>;
+                direction = "input";
+
+                pcam_capture_in: endpoint {
+                    remote-endpoint = <&pcam_csi_out>;
+                };
+            };
+        };
+    };
+};
+
+&axi_iic_0 {
+    #address-cells = <1>;
+    #size-cells = <0>;
+    clock-frequency = <100000>;
+
+    /* KV260 carrier routes the Raspi connector through switch channel 2. */
+    pcam_i2c_mux: i2c-mux@74 {
+        compatible = "nxp,pca9546";
+        reg = <0x74>;
+        #address-cells = <1>;
+        #size-cells = <0>;
+        i2c-mux-idle-disconnect;
+
+        pcam_i2c: i2c@2 {
+            reg = <2>;
+            #address-cells = <1>;
+            #size-cells = <0>;
+
+            ov5640: camera@3c {
+                compatible = "ovti,ov5640";
+                reg = <0x3c>;
+                clocks = <&pcam_xclk>;
+                clock-names = "xclk";
+                AVDD-supply = <&pcam_avdd>;
+                DVDD-supply = <&pcam_dvdd>;
+                DOVDD-supply = <&pcam_dovdd>;
+
+                port {
+                    ov5640_out: endpoint {
+                        remote-endpoint = <&mipi_csi_inmipi_csi2_rx_subsyst_0>;
+                        clock-lanes = <0>;
+                        data-lanes = <1 2>;
+                    };
+                };
+            };
+        };
+    };
+};
+
+&mipi_csi2_rx_subsyst_0 {
+    xlnx,csi-pxl-format = <0x1e>;
+    xlnx,cmn-pxl-format = <0x1e>;
+};
+
+&mipi_csi_port0mipi_csi2_rx_subsyst_0 {
+    xlnx,video-format = <0>;
+    xlnx,video-width = <8>;
+    /delete-property/ xlnx,cfa-pattern;
+};
+
+&mipi_csi_inmipi_csi2_rx_subsyst_0 {
+    remote-endpoint = <&ov5640_out>;
+    clock-lanes = <0>;
+    data-lanes = <1 2>;
+};
+
+&mipi_csi_port1mipi_csi2_rx_subsyst_0 {
+    xlnx,video-format = <0>;
+    xlnx,video-width = <8>;
+    /delete-property/ xlnx,cfa-pattern;
+
+    pcam_csi_out: endpoint {
+        remote-endpoint = <&pcam_capture_in>;
+    };
+};
