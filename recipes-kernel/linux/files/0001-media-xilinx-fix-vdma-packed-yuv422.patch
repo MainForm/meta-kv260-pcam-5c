@@ -1,0 +1,80 @@
+Subject: [PATCH] media: xilinx: preserve packed YUV422 for AXI VDMA capture
+
+The framebuffer-oriented bus-code lookup selects NV16 before YUYV for
+UYVY8_1X16. AXI VDMA does not deinterleave the standard AXI video stream,
+so enumerate and negotiate packed YUYV for this backend and bus code.
+Leave framebuffer and AI layout formatter enumeration unchanged.
+
+Also initialize the multi-planar default height and buffer count, and
+return the negotiated buffer count from TRY_FMT/S_FMT. Otherwise G_FMT
+reports height and plane count as zero before the first format change.
+
+Upstream-Status: Pending
+---
+--- a/drivers/media/platform/xilinx/xilinx-dma.c
++++ b/drivers/media/platform/xilinx/xilinx-dma.c
+@@ -74,6 +74,13 @@
+ 		*pad = remote->index;
+ 
+ 	return media_entity_to_v4l2_subdev(remote->entity);
++}
++
++/* AXI VDMA stores the AXI video stream without framebuffer conversion. */
++static bool xvip_dma_is_vdma(struct xvip_dma *dma)
++{
++	return device_is_compatible(dma->dma->device->dev,
++				    "xlnx,axi-vdma-1.00.a");
+ }
+ 
+ static int xvip_dma_verify_format(struct xvip_dma *dma)
+@@ -795,6 +802,17 @@
+ 	if (ret < 0)
+ 		return ret == -ENOIOCTLCMD ? -EINVAL : ret;
+ 
++	/* Standard AXI video YUV422 is packed YUYV in little-endian memory.
++	 * The bus code is shared with NV16, but VDMA cannot deinterleave it.
++	 */
++	if (xvip_dma_is_vdma(dma) &&
++	    v4l_fmt.format.code == MEDIA_BUS_FMT_UYVY8_1X16) {
++		if (f->index)
++			return -EINVAL;
++		f->pixelformat = V4L2_PIX_FMT_YUYV;
++		return 0;
++	}
++
+ 	/*
+ 	 * In case of frmbuf DMA, this will invoke frambuf driver specific APIs
+ 	 * to enumerate formats otherwise return the pix format corresponding
+@@ -885,12 +903,23 @@
+ 	else
+ 		fourcc = format->fmt.pix.pixelformat;
+ 
++	if (xvip_dma_is_vdma(dma) &&
++	    fmt.format.code == MEDIA_BUS_FMT_UYVY8_1X16)
++		fourcc = V4L2_PIX_FMT_YUYV;
++
+ 	info = xvip_get_format_by_fourcc(fourcc);
+ 
+ 	if (IS_ERR(info))
+ 		info = xvip_get_format_by_fourcc(XVIP_DMA_DEF_FORMAT);
+ 
+ 	dev_dbg(dma->xdev->dev, "fourcc: 0x%08x\n", info->fourcc);
++
++	if (V4L2_TYPE_IS_MULTIPLANAR(dma->format.type)) {
++		format->fmt.pix_mp.pixelformat = info->fourcc;
++		format->fmt.pix_mp.num_planes = info->buffers;
++	} else {
++		format->fmt.pix.pixelformat = info->fourcc;
++	}
+ 
+ 	if (xvip_is_tile_format(info->fourcc, &tile_size) &&
+ 	    V4L2_TYPE_IS_MULTIPLANAR(dma->format.type)) {
+@@ -1395,6 +1424,8 @@
+ 		pix_mp->colorspace = V4L2_COLORSPACE_SRGB;
+ 		pix_mp->field = V4L2_FIELD_NONE;
+ 		pix_mp->width = XVIP_DMA_DEF_WIDTH;
++		pix_mp->height = XVIP_DMA_DEF_HEIGHT;
++		pix_mp->num_planes = dma->fmtinfo->buffers;
+ 
+ 		/* Handling contiguous data with mplanes */
+ 		if (dma->fmtinfo->buffers == 1) {
